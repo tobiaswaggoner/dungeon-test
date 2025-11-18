@@ -81,10 +81,10 @@
     </div>
 
     <script>
-        const DUNGEON_WIDTH = 200;
-        const DUNGEON_HEIGHT = 200;
-        const MIN_ROOM_SIZE = 20;
-        const MAX_ROOM_SIZE = 40;
+        const DUNGEON_WIDTH = 100;
+        const DUNGEON_HEIGHT = 100;
+        const MIN_ROOM_SIZE = 5;
+        const MAX_ROOM_SIZE = 10;
 
         // Tile types
         const TILE = {
@@ -100,6 +100,10 @@
         let canvas, ctx;
         let tilesetImage = null;
         let isImageLoaded = false;
+
+        // Room tracking for fog of war
+        let rooms = [];
+        let roomMap = []; // 2D array mapping each tile to its room index
 
         // Tileset configuration (64x64 tiles)
         const TILE_SOURCE_SIZE = 64;
@@ -191,15 +195,16 @@
                 }
             }
 
-            // Create BSP tree and generate rooms
-            const root = new BSPNode(0, 0, DUNGEON_WIDTH, DUNGEON_HEIGHT);
-            root.split();
-            root.createRooms(dungeon);
+            // Generate rooms using new algorithm
+            const rooms = generateRooms();
 
-            // Add walls around rooms and corridors
+            // Connect adjacent rooms by removing walls between them
+            connectAdjacentRooms(rooms);
+
+            // Add walls around rooms
             addWalls();
 
-            // Add doors at room-corridor transitions
+            // Add doors at room connections
             addDoors();
 
             // Render the dungeon
@@ -217,6 +222,7 @@
             return grid;
         }
 
+        // BSP Node class for room generation
         class BSPNode {
             constructor(x, y, width, height) {
                 this.x = x;
@@ -225,210 +231,220 @@
                 this.height = height;
                 this.leftChild = null;
                 this.rightChild = null;
-                this.room = null;
+                this.splitDirection = null; // 'horizontal' or 'vertical'
+                this.splitPosition = null;
+                this.roomId = null; // ID for leaf rooms
             }
 
             split() {
-                // Stop splitting if too small - higher threshold for fewer, larger rooms
-                if (this.width < MIN_ROOM_SIZE * 2 + 3 || this.height < MIN_ROOM_SIZE * 2 + 3) {
+                // Stop splitting if too small
+                if (this.width < MIN_ROOM_SIZE * 2 + 1 || this.height < MIN_ROOM_SIZE * 2 + 1) {
                     return;
                 }
 
-                // Randomly decide split direction
-                const splitHorizontally = Math.random() > 0.5;
+                // Randomly stop splitting to create varied room sizes
+                if (this.width <= MAX_ROOM_SIZE && this.height <= MAX_ROOM_SIZE && Math.random() < 0.25) {
+                    return;
+                }
 
-                if (this.width > this.height && this.width / this.height >= 1.25) {
-                    // Force vertical split if too wide
-                    this.splitVertically();
-                } else if (this.height > this.width && this.height / this.width >= 1.25) {
-                    // Force horizontal split if too tall
-                    this.splitHorizontally();
-                } else if (splitHorizontally) {
-                    this.splitHorizontally();
+                // Decide split direction based on dimensions
+                let splitHorizontally;
+                if (this.height < MIN_ROOM_SIZE * 2 + 1) {
+                    splitHorizontally = false;
+                } else if (this.width < MIN_ROOM_SIZE * 2 + 1) {
+                    splitHorizontally = true;
+                } else if (this.height > this.width * 1.25) {
+                    splitHorizontally = true;
+                } else if (this.width > this.height * 1.25) {
+                    splitHorizontally = false;
                 } else {
-                    this.splitVertically();
+                    splitHorizontally = Math.random() > 0.5;
+                }
+
+                if (splitHorizontally) {
+                    const minSplit = MIN_ROOM_SIZE;
+                    const maxSplit = this.height - MIN_ROOM_SIZE - 1;
+                    const splitPos = Math.floor(Math.random() * (maxSplit - minSplit) + minSplit);
+
+                    this.splitDirection = 'horizontal';
+                    this.splitPosition = splitPos;
+
+                    this.leftChild = new BSPNode(this.x, this.y, this.width, splitPos);
+                    this.rightChild = new BSPNode(this.x, this.y + splitPos + 1, this.width, this.height - splitPos - 1);
+                } else {
+                    const minSplit = MIN_ROOM_SIZE;
+                    const maxSplit = this.width - MIN_ROOM_SIZE - 1;
+                    const splitPos = Math.floor(Math.random() * (maxSplit - minSplit) + minSplit);
+
+                    this.splitDirection = 'vertical';
+                    this.splitPosition = splitPos;
+
+                    this.leftChild = new BSPNode(this.x, this.y, splitPos, this.height);
+                    this.rightChild = new BSPNode(this.x + splitPos + 1, this.y, this.width - splitPos - 1, this.height);
                 }
 
                 // Recursively split children
-                if (this.leftChild) this.leftChild.split();
-                if (this.rightChild) this.rightChild.split();
+                this.leftChild.split();
+                this.rightChild.split();
             }
 
-            splitHorizontally() {
-                const splitPos = Math.floor(Math.random() * (this.height - MIN_ROOM_SIZE * 2) + MIN_ROOM_SIZE);
+            fillRooms() {
+                if (!this.leftChild && !this.rightChild) {
+                    // Leaf node - create a room and register it
+                    this.roomId = rooms.length;
 
-                this.leftChild = new BSPNode(this.x, this.y, this.width, splitPos);
-                this.rightChild = new BSPNode(this.x, this.y + splitPos, this.width, this.height - splitPos);
-            }
+                    // Assign room type with weighted random selection
+                    // Ratio: 3 empty : 1 treasure : 1 combat
+                    const typeRoll = Math.random() * 10;
+                    let roomType;
+                    if (typeRoll < 2) {
+                        roomType = 'treasure';
+                    } else if (typeRoll < 3) {
+                        roomType = 'combat';
+                    } else {
+                        roomType = 'empty';
+                    }
 
-            splitVertically() {
-                const splitPos = Math.floor(Math.random() * (this.width - MIN_ROOM_SIZE * 2) + MIN_ROOM_SIZE);
+                    rooms.push({
+                        id: this.roomId,
+                        x: this.x,
+                        y: this.y,
+                        width: this.width,
+                        height: this.height,
+                        visible: false,
+                        neighbors: [], // Will be filled when doors are added
+                        type: roomType
+                    });
 
-                this.leftChild = new BSPNode(this.x, this.y, splitPos, this.height);
-                this.rightChild = new BSPNode(this.x + splitPos, this.y, this.width - splitPos, this.height);
-            }
-
-            createRooms(dungeon) {
-                if (this.leftChild || this.rightChild) {
-                    // Not a leaf, create rooms in children
-                    if (this.leftChild) this.leftChild.createRooms(dungeon);
-                    if (this.rightChild) this.rightChild.createRooms(dungeon);
-
-                    // Connect the two child rooms with a corridor
-                    if (this.leftChild && this.rightChild) {
-                        this.connectRooms(dungeon, this.leftChild.getRoom(), this.rightChild.getRoom());
+                    // Fill entire partition with floor and mark tiles with room ID
+                    for (let y = this.y; y < this.y + this.height; y++) {
+                        for (let x = this.x; x < this.x + this.width; x++) {
+                            dungeon[y][x] = TILE.FLOOR;
+                            roomMap[y][x] = this.roomId;
+                        }
                     }
                 } else {
-                    // Leaf node - create a room
-                    const roomWidth = Math.floor(Math.random() * (Math.min(this.width - 4, MAX_ROOM_SIZE) - MIN_ROOM_SIZE) + MIN_ROOM_SIZE);
-                    const roomHeight = Math.floor(Math.random() * (Math.min(this.height - 4, MAX_ROOM_SIZE) - MIN_ROOM_SIZE) + MIN_ROOM_SIZE);
-                    const roomX = this.x + Math.floor(Math.random() * (this.width - roomWidth - 2)) + 1;
-                    const roomY = this.y + Math.floor(Math.random() * (this.height - roomHeight - 2)) + 1;
+                    // Not a leaf - fill children and add wall between them
+                    if (this.leftChild) this.leftChild.fillRooms();
+                    if (this.rightChild) this.rightChild.fillRooms();
 
-                    this.room = {
-                        x: roomX,
-                        y: roomY,
-                        width: roomWidth,
-                        height: roomHeight,
-                        centerX: roomX + Math.floor(roomWidth / 2),
-                        centerY: roomY + Math.floor(roomHeight / 2)
-                    };
-
-                    // Fill the room with floor tiles
-                    for (let y = roomY; y < roomY + roomHeight; y++) {
-                        for (let x = roomX; x < roomX + roomWidth; x++) {
-                            if (x >= 0 && x < DUNGEON_WIDTH && y >= 0 && y < DUNGEON_HEIGHT) {
-                                dungeon[y][x] = TILE.FLOOR;
-                            }
+                    // Add wall between children
+                    if (this.splitDirection === 'horizontal') {
+                        const wallY = this.y + this.splitPosition;
+                        for (let x = this.x; x < this.x + this.width; x++) {
+                            dungeon[wallY][x] = TILE.WALL;
+                            roomMap[wallY][x] = -1; // -1 for walls
+                        }
+                    } else {
+                        const wallX = this.x + this.splitPosition;
+                        for (let y = this.y; y < this.y + this.height; y++) {
+                            dungeon[y][wallX] = TILE.WALL;
+                            roomMap[y][wallX] = -1; // -1 for walls
                         }
                     }
                 }
             }
 
-            getRoom() {
-                if (this.room) {
-                    return this.room;
+            addDoors() {
+                if (!this.leftChild && !this.rightChild) {
+                    // Leaf node - no doors to add
+                    return;
                 }
 
-                let leftRoom = null;
-                let rightRoom = null;
+                // Recursively add doors in children
+                if (this.leftChild) this.leftChild.addDoors();
+                if (this.rightChild) this.rightChild.addDoors();
 
-                if (this.leftChild) leftRoom = this.leftChild.getRoom();
-                if (this.rightChild) rightRoom = this.rightChild.getRoom();
+                // Get room IDs of left and right children (from their leaf rooms)
+                const leftRoomId = this.leftChild.getRoomId();
+                const rightRoomId = this.rightChild.getRoomId();
 
-                return leftRoom || rightRoom;
-            }
+                // Add ONE door between the two children
+                if (this.splitDirection === 'horizontal') {
+                    const wallY = this.y + this.splitPosition;
+                    // Pick a random position along the wall
+                    const doorX = this.x + Math.floor(Math.random() * (this.width - 2)) + 1;
+                    dungeon[wallY][doorX] = TILE.DOOR;
+                    roomMap[wallY][doorX] = -2; // -2 for doors
 
-            connectRooms(dungeon, room1, room2) {
-                if (!room1 || !room2) return;
-
-                let x = room1.centerX;
-                let y = room1.centerY;
-
-                const targetX = room2.centerX;
-                const targetY = room2.centerY;
-
-                // Create L-shaped corridor
-                if (Math.random() > 0.5) {
-                    // Horizontal then vertical
-                    this.createHorizontalCorridor(dungeon, x, targetX, y);
-                    this.createVerticalCorridor(dungeon, targetX, y, targetY);
+                    // Register neighbor relationship
+                    if (leftRoomId !== null && rightRoomId !== null) {
+                        rooms[leftRoomId].neighbors.push(rightRoomId);
+                        rooms[rightRoomId].neighbors.push(leftRoomId);
+                    }
                 } else {
-                    // Vertical then horizontal
-                    this.createVerticalCorridor(dungeon, x, y, targetY);
-                    this.createHorizontalCorridor(dungeon, x, targetX, targetY);
-                }
-            }
+                    const wallX = this.x + this.splitPosition;
+                    // Pick a random position along the wall
+                    const doorY = this.y + Math.floor(Math.random() * (this.height - 2)) + 1;
+                    dungeon[doorY][wallX] = TILE.DOOR;
+                    roomMap[doorY][wallX] = -2; // -2 for doors
 
-            createHorizontalCorridor(dungeon, x1, x2, y) {
-                const minX = Math.min(x1, x2);
-                const maxX = Math.max(x1, x2);
-
-                for (let x = minX; x <= maxX; x++) {
-                    if (x >= 0 && x < DUNGEON_WIDTH && y >= 0 && y < DUNGEON_HEIGHT) {
-                        if (dungeon[y][x] === TILE.EMPTY) {
-                            dungeon[y][x] = TILE.FLOOR;
-                        }
+                    // Register neighbor relationship
+                    if (leftRoomId !== null && rightRoomId !== null) {
+                        rooms[leftRoomId].neighbors.push(rightRoomId);
+                        rooms[rightRoomId].neighbors.push(leftRoomId);
                     }
                 }
             }
 
-            createVerticalCorridor(dungeon, x, y1, y2) {
-                const minY = Math.min(y1, y2);
-                const maxY = Math.max(y1, y2);
-
-                for (let y = minY; y <= maxY; y++) {
-                    if (x >= 0 && x < DUNGEON_WIDTH && y >= 0 && y < DUNGEON_HEIGHT) {
-                        if (dungeon[y][x] === TILE.EMPTY) {
-                            dungeon[y][x] = TILE.FLOOR;
-                        }
-                    }
+            getRoomId() {
+                // Get the room ID from this node (for leaf) or from children
+                if (!this.leftChild && !this.rightChild) {
+                    return this.roomId;
                 }
+                // For non-leaf nodes, return the first found room ID
+                return this.leftChild?.getRoomId() ?? this.rightChild?.getRoomId() ?? null;
             }
         }
 
-        function addWalls() {
-            // Create a copy to avoid modifying while iterating
-            const tempDungeon = JSON.parse(JSON.stringify(dungeon));
+        function generateRooms() {
+            // Reset rooms array
+            rooms = [];
 
+            // Initialize roomMap
+            roomMap = [];
             for (let y = 0; y < DUNGEON_HEIGHT; y++) {
+                roomMap[y] = [];
                 for (let x = 0; x < DUNGEON_WIDTH; x++) {
-                    if (tempDungeon[y][x] === TILE.FLOOR) {
-                        // Check all 8 directions for empty tiles
-                        for (let dy = -1; dy <= 1; dy++) {
-                            for (let dx = -1; dx <= 1; dx++) {
-                                if (dx === 0 && dy === 0) continue;
-
-                                const nx = x + dx;
-                                const ny = y + dy;
-
-                                if (nx >= 0 && nx < DUNGEON_WIDTH && ny >= 0 && ny < DUNGEON_HEIGHT) {
-                                    if (tempDungeon[ny][nx] === TILE.EMPTY) {
-                                        // Check if it's a corner
-                                        if (dx !== 0 && dy !== 0) {
-                                            dungeon[ny][nx] = TILE.CORNER;
-                                        } else {
-                                            dungeon[ny][nx] = TILE.WALL;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    dungeon[y][x] = TILE.FLOOR;
+                    roomMap[y][x] = null;
                 }
+            }
+
+            // Create BSP tree
+            const root = new BSPNode(0, 0, DUNGEON_WIDTH, DUNGEON_HEIGHT);
+            root.split();
+            root.fillRooms();
+            root.addDoors();
+
+            // Make the first room visible by default
+            if (rooms.length > 0) {
+                rooms[0].visible = true;
+            }
+
+            return []; // Return empty array for compatibility
+        }
+
+        function connectAdjacentRooms(rooms) {
+            // Doors are already added by BSP tree, nothing to do here
+        }
+
+        function addWalls() {
+            // Walls are already created by the room generation algorithm
+            // This function now only adds outer boundary walls if needed
+            for (let x = 0; x < DUNGEON_WIDTH; x++) {
+                if (dungeon[0][x] === TILE.EMPTY) dungeon[0][x] = TILE.WALL;
+                if (dungeon[DUNGEON_HEIGHT - 1][x] === TILE.EMPTY) dungeon[DUNGEON_HEIGHT - 1][x] = TILE.WALL;
+            }
+            for (let y = 0; y < DUNGEON_HEIGHT; y++) {
+                if (dungeon[y][0] === TILE.EMPTY) dungeon[y][0] = TILE.WALL;
+                if (dungeon[y][DUNGEON_WIDTH - 1] === TILE.EMPTY) dungeon[y][DUNGEON_WIDTH - 1] = TILE.WALL;
             }
         }
 
         function addDoors() {
-            // Find places where a corridor (1 tile wide) meets a room
-            for (let y = 1; y < DUNGEON_HEIGHT - 1; y++) {
-                for (let x = 1; x < DUNGEON_WIDTH - 1; x++) {
-                    if (dungeon[y][x] === TILE.WALL) {
-                        // Check if this wall is at a corridor-room transition
-
-                        // Horizontal corridor check (wall between vertical floor tiles)
-                        const hasFloorAbove = dungeon[y - 1][x] === TILE.FLOOR;
-                        const hasFloorBelow = dungeon[y + 1][x] === TILE.FLOOR;
-                        const hasWallLeft = dungeon[y][x - 1] === TILE.WALL || dungeon[y][x - 1] === TILE.CORNER;
-                        const hasWallRight = dungeon[y][x + 1] === TILE.WALL || dungeon[y][x + 1] === TILE.CORNER;
-
-                        // Vertical corridor check (wall between horizontal floor tiles)
-                        const hasFloorLeft = dungeon[y][x - 1] === TILE.FLOOR;
-                        const hasFloorRight = dungeon[y][x + 1] === TILE.FLOOR;
-                        const hasWallAbove = dungeon[y - 1][x] === TILE.WALL || dungeon[y - 1][x] === TILE.CORNER;
-                        const hasWallBelow = dungeon[y + 1][x] === TILE.WALL || dungeon[y + 1][x] === TILE.CORNER;
-
-                        // Check if it's a narrow passage (1 tile corridor)
-                        if (hasFloorAbove && hasFloorBelow && hasWallLeft && hasWallRight) {
-                            // Vertical corridor
-                            dungeon[y][x] = TILE.DOOR;
-                        } else if (hasFloorLeft && hasFloorRight && hasWallAbove && hasWallBelow) {
-                            // Horizontal corridor
-                            dungeon[y][x] = TILE.DOOR;
-                        }
-                    }
-                }
-            }
+            // Doors are already created by connectAdjacentRooms
+            // This function is kept for compatibility but does nothing
         }
 
         function getTileCoords(x, y, tile) {
@@ -437,19 +453,45 @@
             }
 
             if (tile === TILE.FLOOR) {
-                // Use random floor variant for this position
+                // Check room type and use appropriate tile
+                const roomId = roomMap[y][x];
+                if (roomId >= 0 && rooms[roomId]) {
+                    const roomType = rooms[roomId].type;
+
+                    if (roomType === 'treasure') {
+                        return { x: 18, y: 11 }; // Treasure room floor
+                    } else if (roomType === 'combat') {
+                        return { x: 7, y: 12 }; // Combat room floor
+                    }
+                }
+
+                // Default: use random floor variant for empty rooms
                 return tileVariants[y][x].floor;
             }
 
             if (tile === TILE.DOOR) {
-                // Check if door should be horizontal or vertical
-                const hasFloorLeft = x > 0 && dungeon[y][x - 1] === TILE.FLOOR;
-                const hasFloorRight = x < DUNGEON_WIDTH - 1 && dungeon[y][x + 1] === TILE.FLOOR;
+                // Check if door should be horizontal or vertical based on wall orientation
+                const hasWallLeft = x > 0 && dungeon[y][x - 1] === TILE.WALL;
+                const hasWallRight = x < DUNGEON_WIDTH - 1 && dungeon[y][x + 1] === TILE.WALL;
+                const hasWallAbove = y > 0 && dungeon[y - 1][x] === TILE.WALL;
+                const hasWallBelow = y < DUNGEON_HEIGHT - 1 && dungeon[y + 1][x] === TILE.WALL;
 
-                if (hasFloorLeft || hasFloorRight) {
+                // If walls are left/right, door is vertical (opens horizontally)
+                // If walls are above/below, door is horizontal (opens vertically)
+                if (hasWallLeft || hasWallRight) {
+                    return TILESET_COORDS.DOOR_VERTICAL;
+                } else if (hasWallAbove || hasWallBelow) {
                     return TILESET_COORDS.DOOR_HORIZONTAL;
                 } else {
-                    return TILESET_COORDS.DOOR_VERTICAL;
+                    // Fallback - check floor positions
+                    const hasFloorLeft = x > 0 && dungeon[y][x - 1] === TILE.FLOOR;
+                    const hasFloorRight = x < DUNGEON_WIDTH - 1 && dungeon[y][x + 1] === TILE.FLOOR;
+
+                    if (hasFloorLeft && hasFloorRight) {
+                        return TILESET_COORDS.DOOR_HORIZONTAL;
+                    } else {
+                        return TILESET_COORDS.DOOR_VERTICAL;
+                    }
                 }
             }
 
@@ -476,8 +518,40 @@
             for (let y = 0; y < DUNGEON_HEIGHT; y++) {
                 for (let x = 0; x < DUNGEON_WIDTH; x++) {
                     const tile = dungeon[y][x];
+                    const roomId = roomMap[y][x];
 
                     if (tile === TILE.EMPTY) {
+                        continue;
+                    }
+
+                    // Check if this tile's room is visible
+                    const isVisible = roomId >= 0 && rooms[roomId] && rooms[roomId].visible;
+
+                    // Doors and walls are visible if adjacent to visible room
+                    let isDoorOrWallVisible = false;
+                    if (roomId === -1 || roomId === -2) { // Wall or door
+                        // Check if any adjacent tile belongs to a visible room
+                        for (let dy = -1; dy <= 1; dy++) {
+                            for (let dx = -1; dx <= 1; dx++) {
+                                if (dx === 0 && dy === 0) continue;
+                                const ny = y + dy;
+                                const nx = x + dx;
+                                if (ny >= 0 && ny < DUNGEON_HEIGHT && nx >= 0 && nx < DUNGEON_WIDTH) {
+                                    const neighborRoomId = roomMap[ny][nx];
+                                    if (neighborRoomId >= 0 && rooms[neighborRoomId] && rooms[neighborRoomId].visible) {
+                                        isDoorOrWallVisible = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (isDoorOrWallVisible) break;
+                        }
+                    }
+
+                    if (!isVisible && !isDoorOrWallVisible) {
+                        // Draw fog of war (black)
+                        ctx.fillStyle = '#000000';
+                        ctx.fillRect(x * tileSize, y * tileSize, tileSize, tileSize);
                         continue;
                     }
 
@@ -503,6 +577,46 @@
             document.getElementById('tileSizeValue').textContent = tileSize + 'px';
             renderDungeon();
         }
+
+        // Handle canvas click for revealing rooms
+        function handleCanvasClick(event) {
+            const rect = canvas.getBoundingClientRect();
+            const clickX = Math.floor((event.clientX - rect.left) / tileSize);
+            const clickY = Math.floor((event.clientY - rect.top) / tileSize);
+
+            // Check if click is within bounds
+            if (clickX < 0 || clickX >= DUNGEON_WIDTH || clickY < 0 || clickY >= DUNGEON_HEIGHT) {
+                return;
+            }
+
+            const clickedRoomId = roomMap[clickY][clickX];
+
+            // Only reveal if clicked room is valid and has a visible neighbor
+            if (clickedRoomId >= 0 && rooms[clickedRoomId]) {
+                const room = rooms[clickedRoomId];
+
+                // Check if any neighbor is visible
+                let hasVisibleNeighbor = false;
+                for (let neighborId of room.neighbors) {
+                    if (rooms[neighborId].visible) {
+                        hasVisibleNeighbor = true;
+                        break;
+                    }
+                }
+
+                // Reveal the room if it has a visible neighbor (or if no rooms are visible yet)
+                const anyRoomVisible = rooms.some(r => r.visible);
+                if (hasVisibleNeighbor || !anyRoomVisible) {
+                    room.visible = true;
+                    renderDungeon();
+                }
+            }
+        }
+
+        // Add click listener to canvas after it's created
+        window.addEventListener('load', function() {
+            canvas.addEventListener('click', handleCanvasClick);
+        });
     </script>
 </body>
 </html>
