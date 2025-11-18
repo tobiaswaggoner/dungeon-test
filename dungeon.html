@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prozeduraler Dungeon Generator</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        #controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        #info {
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #aaaaaa;
+        }
+
+        #canvas-container {
+            border: 2px solid #444;
+            overflow: auto;
+            max-width: 95vw;
+            max-height: 70vh;
+            background-color: #000000;
+        }
+
+        canvas {
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+    </style>
+</head>
+<body>
+    <h1>Prozeduraler Dungeon Generator</h1>
+
+    <div id="controls">
+        <button onclick="generateNewDungeon()">Neuen Dungeon generieren</button>
+        <label>
+            Kachelgröße:
+            <input type="range" id="tileSize" min="8" max="64" value="32" onchange="updateTileSize()">
+            <span id="tileSizeValue">32px</span>
+        </label>
+    </div>
+
+    <div id="info">Größe: 200x200 Tiles | Klicke auf den Button um einen neuen Dungeon zu generieren</div>
+
+    <div id="canvas-container">
+        <canvas id="dungeonCanvas"></canvas>
+    </div>
+
+    <script>
+        const DUNGEON_WIDTH = 200;
+        const DUNGEON_HEIGHT = 200;
+        const MIN_ROOM_SIZE = 20;
+        const MAX_ROOM_SIZE = 40;
+
+        // Tile types
+        const TILE = {
+            EMPTY: 0,
+            FLOOR: 1,
+            WALL: 2,
+            DOOR: 3,
+            CORNER: 4
+        };
+
+        let dungeon = [];
+        let tileSize = 32;
+        let canvas, ctx;
+        let tilesetImage = null;
+        let isImageLoaded = false;
+
+        // Tileset configuration (64x64 tiles)
+        const TILE_SOURCE_SIZE = 64;
+
+        // Tile coordinates in the tileset (column, row) - based on matrix
+        const TILESET_COORDS = {
+            FLOOR: { x: 0, y: 1 },  // Default floor tile
+            WALL_TOP: { x: 0, y: 0 },  // Default wall
+            WALL_BOTTOM: { x: 0, y: 0 },
+            WALL_LEFT: { x: 0, y: 0 },
+            WALL_RIGHT: { x: 0, y: 0 },
+            WALL_HORIZONTAL: { x: 0, y: 0 },
+            WALL_VERTICAL: { x: 0, y: 0 },
+            CORNER_TL: { x: 0, y: 0 },
+            CORNER_TR: { x: 0, y: 0 },
+            CORNER_BL: { x: 0, y: 0 },
+            CORNER_BR: { x: 0, y: 0 },
+            DOOR_VERTICAL: { x: 8, y: 0 },
+            DOOR_HORIZONTAL: { x: 13, y: 0 }
+        };
+
+        // Tile variants for random variation with probability weights
+        // Higher weight = more likely to appear
+        const WALL_VARIANTS = [
+            { x: 0, y: 0, weight: 20 },    // Common
+            { x: 1, y: 0, weight: 15 },    // Common
+            { x: 2, y: 0, weight: 15 },    // Common
+            { x: 3, y: 0, weight: 15 },    // Less common
+            { x: 3, y: 11, weight: 1 }    // Rare
+        ];
+
+        const FLOOR_VARIANTS = [
+            { x: 0, y: 1, weight: 200 },   // Very common (main floor tile)
+            { x: 1, y: 1, weight: 50 },    // Common
+            { x: 2, y: 1, weight: 30 },    // Less common
+            { x: 2, y: 11, weight: 2 },   // Rare
+            { x: 19, y: 8, weight: 1 }    // Rare (special tile)
+        ];
+
+        // Store tile variants for each position to maintain consistency
+        let tileVariants = [];
+
+        // Weighted random selection function
+        function getWeightedRandomVariant(variants) {
+            // Calculate total weight
+            const totalWeight = variants.reduce((sum, variant) => sum + variant.weight, 0);
+
+            // Generate random number between 0 and totalWeight
+            let random = Math.random() * totalWeight;
+
+            // Select variant based on weight
+            for (let variant of variants) {
+                random -= variant.weight;
+                if (random <= 0) {
+                    return { x: variant.x, y: variant.y };
+                }
+            }
+
+            // Fallback (should never reach here)
+            return { x: variants[0].x, y: variants[0].y };
+        }
+
+        // Initialize
+        window.onload = function() {
+            canvas = document.getElementById('dungeonCanvas');
+            ctx = canvas.getContext('2d');
+
+            // Load tileset image
+            tilesetImage = new Image();
+            tilesetImage.onload = function() {
+                isImageLoaded = true;
+                generateNewDungeon();
+            };
+            tilesetImage.src = 'Assets/Castle-Dungeon2_Tiles/Tileset.png';
+        };
+
+        function generateNewDungeon() {
+            dungeon = createEmptyDungeon();
+
+            // Initialize tile variants array with weighted random selection
+            tileVariants = [];
+            for (let y = 0; y < DUNGEON_HEIGHT; y++) {
+                tileVariants[y] = [];
+                for (let x = 0; x < DUNGEON_WIDTH; x++) {
+                    tileVariants[y][x] = {
+                        floor: getWeightedRandomVariant(FLOOR_VARIANTS),
+                        wall: getWeightedRandomVariant(WALL_VARIANTS)
+                    };
+                }
+            }
+
+            // Create BSP tree and generate rooms
+            const root = new BSPNode(0, 0, DUNGEON_WIDTH, DUNGEON_HEIGHT);
+            root.split();
+            root.createRooms(dungeon);
+
+            // Add walls around rooms and corridors
+            addWalls();
+
+            // Add doors at room-corridor transitions
+            addDoors();
+
+            // Render the dungeon
+            renderDungeon();
+        }
+
+        function createEmptyDungeon() {
+            const grid = [];
+            for (let y = 0; y < DUNGEON_HEIGHT; y++) {
+                grid[y] = [];
+                for (let x = 0; x < DUNGEON_WIDTH; x++) {
+                    grid[y][x] = TILE.EMPTY;
+                }
+            }
+            return grid;
+        }
+
+        class BSPNode {
+            constructor(x, y, width, height) {
+                this.x = x;
+                this.y = y;
+                this.width = width;
+                this.height = height;
+                this.leftChild = null;
+                this.rightChild = null;
+                this.room = null;
+            }
+
+            split() {
+                // Stop splitting if too small - higher threshold for fewer, larger rooms
+                if (this.width < MIN_ROOM_SIZE * 2 + 3 || this.height < MIN_ROOM_SIZE * 2 + 3) {
+                    return;
+                }
+
+                // Randomly decide split direction
+                const splitHorizontally = Math.random() > 0.5;
+
+                if (this.width > this.height && this.width / this.height >= 1.25) {
+                    // Force vertical split if too wide
+                    this.splitVertically();
+                } else if (this.height > this.width && this.height / this.width >= 1.25) {
+                    // Force horizontal split if too tall
+                    this.splitHorizontally();
+                } else if (splitHorizontally) {
+                    this.splitHorizontally();
+                } else {
+                    this.splitVertically();
+                }
+
+                // Recursively split children
+                if (this.leftChild) this.leftChild.split();
+                if (this.rightChild) this.rightChild.split();
+            }
+
+            splitHorizontally() {
+                const splitPos = Math.floor(Math.random() * (this.height - MIN_ROOM_SIZE * 2) + MIN_ROOM_SIZE);
+
+                this.leftChild = new BSPNode(this.x, this.y, this.width, splitPos);
+                this.rightChild = new BSPNode(this.x, this.y + splitPos, this.width, this.height - splitPos);
+            }
+
+            splitVertically() {
+                const splitPos = Math.floor(Math.random() * (this.width - MIN_ROOM_SIZE * 2) + MIN_ROOM_SIZE);
+
+                this.leftChild = new BSPNode(this.x, this.y, splitPos, this.height);
+                this.rightChild = new BSPNode(this.x + splitPos, this.y, this.width - splitPos, this.height);
+            }
+
+            createRooms(dungeon) {
+                if (this.leftChild || this.rightChild) {
+                    // Not a leaf, create rooms in children
+                    if (this.leftChild) this.leftChild.createRooms(dungeon);
+                    if (this.rightChild) this.rightChild.createRooms(dungeon);
+
+                    // Connect the two child rooms with a corridor
+                    if (this.leftChild && this.rightChild) {
+                        this.connectRooms(dungeon, this.leftChild.getRoom(), this.rightChild.getRoom());
+                    }
+                } else {
+                    // Leaf node - create a room
+                    const roomWidth = Math.floor(Math.random() * (Math.min(this.width - 4, MAX_ROOM_SIZE) - MIN_ROOM_SIZE) + MIN_ROOM_SIZE);
+                    const roomHeight = Math.floor(Math.random() * (Math.min(this.height - 4, MAX_ROOM_SIZE) - MIN_ROOM_SIZE) + MIN_ROOM_SIZE);
+                    const roomX = this.x + Math.floor(Math.random() * (this.width - roomWidth - 2)) + 1;
+                    const roomY = this.y + Math.floor(Math.random() * (this.height - roomHeight - 2)) + 1;
+
+                    this.room = {
+                        x: roomX,
+                        y: roomY,
+                        width: roomWidth,
+                        height: roomHeight,
+                        centerX: roomX + Math.floor(roomWidth / 2),
+                        centerY: roomY + Math.floor(roomHeight / 2)
+                    };
+
+                    // Fill the room with floor tiles
+                    for (let y = roomY; y < roomY + roomHeight; y++) {
+                        for (let x = roomX; x < roomX + roomWidth; x++) {
+                            if (x >= 0 && x < DUNGEON_WIDTH && y >= 0 && y < DUNGEON_HEIGHT) {
+                                dungeon[y][x] = TILE.FLOOR;
+                            }
+                        }
+                    }
+                }
+            }
+
+            getRoom() {
+                if (this.room) {
+                    return this.room;
+                }
+
+                let leftRoom = null;
+                let rightRoom = null;
+
+                if (this.leftChild) leftRoom = this.leftChild.getRoom();
+                if (this.rightChild) rightRoom = this.rightChild.getRoom();
+
+                return leftRoom || rightRoom;
+            }
+
+            connectRooms(dungeon, room1, room2) {
+                if (!room1 || !room2) return;
+
+                let x = room1.centerX;
+                let y = room1.centerY;
+
+                const targetX = room2.centerX;
+                const targetY = room2.centerY;
+
+                // Create L-shaped corridor
+                if (Math.random() > 0.5) {
+                    // Horizontal then vertical
+                    this.createHorizontalCorridor(dungeon, x, targetX, y);
+                    this.createVerticalCorridor(dungeon, targetX, y, targetY);
+                } else {
+                    // Vertical then horizontal
+                    this.createVerticalCorridor(dungeon, x, y, targetY);
+                    this.createHorizontalCorridor(dungeon, x, targetX, targetY);
+                }
+            }
+
+            createHorizontalCorridor(dungeon, x1, x2, y) {
+                const minX = Math.min(x1, x2);
+                const maxX = Math.max(x1, x2);
+
+                for (let x = minX; x <= maxX; x++) {
+                    if (x >= 0 && x < DUNGEON_WIDTH && y >= 0 && y < DUNGEON_HEIGHT) {
+                        if (dungeon[y][x] === TILE.EMPTY) {
+                            dungeon[y][x] = TILE.FLOOR;
+                        }
+                    }
+                }
+            }
+
+            createVerticalCorridor(dungeon, x, y1, y2) {
+                const minY = Math.min(y1, y2);
+                const maxY = Math.max(y1, y2);
+
+                for (let y = minY; y <= maxY; y++) {
+                    if (x >= 0 && x < DUNGEON_WIDTH && y >= 0 && y < DUNGEON_HEIGHT) {
+                        if (dungeon[y][x] === TILE.EMPTY) {
+                            dungeon[y][x] = TILE.FLOOR;
+                        }
+                    }
+                }
+            }
+        }
+
+        function addWalls() {
+            // Create a copy to avoid modifying while iterating
+            const tempDungeon = JSON.parse(JSON.stringify(dungeon));
+
+            for (let y = 0; y < DUNGEON_HEIGHT; y++) {
+                for (let x = 0; x < DUNGEON_WIDTH; x++) {
+                    if (tempDungeon[y][x] === TILE.FLOOR) {
+                        // Check all 8 directions for empty tiles
+                        for (let dy = -1; dy <= 1; dy++) {
+                            for (let dx = -1; dx <= 1; dx++) {
+                                if (dx === 0 && dy === 0) continue;
+
+                                const nx = x + dx;
+                                const ny = y + dy;
+
+                                if (nx >= 0 && nx < DUNGEON_WIDTH && ny >= 0 && ny < DUNGEON_HEIGHT) {
+                                    if (tempDungeon[ny][nx] === TILE.EMPTY) {
+                                        // Check if it's a corner
+                                        if (dx !== 0 && dy !== 0) {
+                                            dungeon[ny][nx] = TILE.CORNER;
+                                        } else {
+                                            dungeon[ny][nx] = TILE.WALL;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        function addDoors() {
+            // Find places where a corridor (1 tile wide) meets a room
+            for (let y = 1; y < DUNGEON_HEIGHT - 1; y++) {
+                for (let x = 1; x < DUNGEON_WIDTH - 1; x++) {
+                    if (dungeon[y][x] === TILE.WALL) {
+                        // Check if this wall is at a corridor-room transition
+
+                        // Horizontal corridor check (wall between vertical floor tiles)
+                        const hasFloorAbove = dungeon[y - 1][x] === TILE.FLOOR;
+                        const hasFloorBelow = dungeon[y + 1][x] === TILE.FLOOR;
+                        const hasWallLeft = dungeon[y][x - 1] === TILE.WALL || dungeon[y][x - 1] === TILE.CORNER;
+                        const hasWallRight = dungeon[y][x + 1] === TILE.WALL || dungeon[y][x + 1] === TILE.CORNER;
+
+                        // Vertical corridor check (wall between horizontal floor tiles)
+                        const hasFloorLeft = dungeon[y][x - 1] === TILE.FLOOR;
+                        const hasFloorRight = dungeon[y][x + 1] === TILE.FLOOR;
+                        const hasWallAbove = dungeon[y - 1][x] === TILE.WALL || dungeon[y - 1][x] === TILE.CORNER;
+                        const hasWallBelow = dungeon[y + 1][x] === TILE.WALL || dungeon[y + 1][x] === TILE.CORNER;
+
+                        // Check if it's a narrow passage (1 tile corridor)
+                        if (hasFloorAbove && hasFloorBelow && hasWallLeft && hasWallRight) {
+                            // Vertical corridor
+                            dungeon[y][x] = TILE.DOOR;
+                        } else if (hasFloorLeft && hasFloorRight && hasWallAbove && hasWallBelow) {
+                            // Horizontal corridor
+                            dungeon[y][x] = TILE.DOOR;
+                        }
+                    }
+                }
+            }
+        }
+
+        function getTileCoords(x, y, tile) {
+            if (tile === TILE.EMPTY) {
+                return null;
+            }
+
+            if (tile === TILE.FLOOR) {
+                // Use random floor variant for this position
+                return tileVariants[y][x].floor;
+            }
+
+            if (tile === TILE.DOOR) {
+                // Check if door should be horizontal or vertical
+                const hasFloorLeft = x > 0 && dungeon[y][x - 1] === TILE.FLOOR;
+                const hasFloorRight = x < DUNGEON_WIDTH - 1 && dungeon[y][x + 1] === TILE.FLOOR;
+
+                if (hasFloorLeft || hasFloorRight) {
+                    return TILESET_COORDS.DOOR_HORIZONTAL;
+                } else {
+                    return TILESET_COORDS.DOOR_VERTICAL;
+                }
+            }
+
+            if (tile === TILE.WALL || tile === TILE.CORNER) {
+                // Use random wall variant for this position
+                return tileVariants[y][x].wall;
+            }
+
+            return tileVariants[y][x].floor;
+        }
+
+        function renderDungeon() {
+            if (!isImageLoaded) {
+                return;
+            }
+
+            canvas.width = DUNGEON_WIDTH * tileSize;
+            canvas.height = DUNGEON_HEIGHT * tileSize;
+
+            // Fill background with black
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            for (let y = 0; y < DUNGEON_HEIGHT; y++) {
+                for (let x = 0; x < DUNGEON_WIDTH; x++) {
+                    const tile = dungeon[y][x];
+
+                    if (tile === TILE.EMPTY) {
+                        continue;
+                    }
+
+                    const coords = getTileCoords(x, y, tile);
+                    if (coords) {
+                        // Calculate source position in tileset
+                        const srcX = coords.x * TILE_SOURCE_SIZE;
+                        const srcY = coords.y * TILE_SOURCE_SIZE;
+
+                        // Draw tile from tileset, scaled to current tileSize
+                        ctx.drawImage(
+                            tilesetImage,
+                            srcX, srcY, TILE_SOURCE_SIZE, TILE_SOURCE_SIZE,
+                            x * tileSize, y * tileSize, tileSize, tileSize
+                        );
+                    }
+                }
+            }
+        }
+
+        function updateTileSize() {
+            tileSize = parseInt(document.getElementById('tileSize').value);
+            document.getElementById('tileSizeValue').textContent = tileSize + 'px';
+            renderDungeon();
+        }
+    </script>
+</body>
+</html>
