@@ -55,6 +55,18 @@
             image-rendering: pixelated;
             image-rendering: crisp-edges;
         }
+
+        #minimap {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            border: 3px solid #4CAF50;
+            border-radius: 4px;
+            background-color: rgba(0, 0, 0, 0.7);
+            z-index: 100;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
     </style>
 </head>
 
@@ -65,13 +77,28 @@
 
     <div id="canvas-container">
         <canvas id="dungeonCanvas"></canvas>
+        <canvas id="minimap"></canvas>
     </div>
 
+    <!-- Combat UI -->
+    <div id="combat-ui" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, 0.95); border: 4px solid #4CAF50; border-radius: 12px; padding: 30px; max-width: 600px; z-index: 200; color: white; font-family: Arial, sans-serif;">
+        <h2 id="combat-subject" style="text-align: center; color: #4CAF50; margin-top: 0;">Kampf!</h2>
+        <div id="combat-hp" style="margin-bottom: 20px; font-size: 18px;">
+            <div>Deine HP: <span id="player-hp-display" style="color: #4CAF50; font-weight: bold;">100</span>/100</div>
+            <div>Gegner HP: <span id="enemy-hp-display" style="color: #FF4444; font-weight: bold;">30</span>/30</div>
+        </div>
+        <div id="combat-timer" style="text-align: center; font-size: 24px; color: #FFD700; margin-bottom: 20px;">Zeit: <span id="timer-display">10</span>s</div>
+        <div id="combat-question" style="font-size: 20px; margin-bottom: 25px; line-height: 1.4;"></div>
+        <div id="combat-answers" style="display: flex; flex-direction: column; gap: 12px;"></div>
+        <div id="combat-feedback" style="margin-top: 20px; text-align: center; font-size: 18px; min-height: 30px; font-weight: bold;"></div>
+    </div>
+
+    <script src="database/questions.js"></script>
     <script>
         const DUNGEON_WIDTH = 100;
         const DUNGEON_HEIGHT = 100;
-        const MIN_ROOM_SIZE = 5;
-        const MAX_ROOM_SIZE = 10;
+        const MIN_ROOM_SIZE = 4;
+        const MAX_ROOM_SIZE = 8;
 
         // Tile types
         const TILE = {
@@ -82,29 +109,239 @@
             CORNER: 4
         };
 
+        // Direction constants
+        const DIRECTION = {
+            UP: 'up',
+            DOWN: 'down',
+            LEFT: 'left',
+            RIGHT: 'right'
+        };
+
+        // Animation constants
+        const ANIMATION = {
+            SPELLCAST: 'spellcast',
+            THRUST: 'thrust',
+            WALK: 'walk',
+            SLASH: 'slash',
+            SHOOT: 'shoot',
+            HURT: 'hurt',
+            CLIMB: 'climb',
+            IDLE: 'idle',
+            JUMP: 'jump',
+            SIT: 'sit',
+            EMOTE: 'emote',
+            RUN: 'run',
+            WATERING: 'watering',
+            COMBAT: 'combat'
+        };
+
+        // Spritesheet configurations (embedded to avoid CORS issues with file://)
+        const SPRITESHEET_CONFIGS = {
+            player: {
+                frameWidth: 64,
+                frameHeight: 64,
+                animations: [
+                    { name: 'spellcast', firstrow: 0, rowcount: 4, animcount: 7 },
+                    { name: 'thrust', firstrow: 4, rowcount: 4, animcount: 8 },
+                    { name: 'walk', firstrow: 8, rowcount: 4, animcount: 9 },
+                    { name: 'slash', firstrow: 12, rowcount: 4, animcount: 6 },
+                    { name: 'shoot', firstrow: 16, rowcount: 4, animcount: 13 },
+                    { name: 'hurt', firstrow: 20, rowcount: 1, animcount: 6 },
+                    { name: 'climb', firstrow: 21, rowcount: 1, animcount: 6 },
+                    { name: 'idle', firstrow: 22, rowcount: 4, animcount: 2 },
+                    { name: 'jump', firstrow: 26, rowcount: 4, animcount: 6 },
+                    { name: 'sit', firstrow: 30, rowcount: 4, animcount: 15 },
+                    { name: 'emote', firstrow: 34, rowcount: 4, animcount: 15 },
+                    { name: 'run', firstrow: 38, rowcount: 4, animcount: 8 },
+                    { name: 'watering', firstrow: 42, rowcount: 4, animcount: 7 },
+                    { name: 'combat', firstrow: 46, rowcount: 4, animcount: 3 }
+                ]
+            },
+            goblin: {
+                frameWidth: 64,
+                frameHeight: 64,
+                animations: [
+                    { name: 'spellcast', firstrow: 0, rowcount: 4, animcount: 7 },
+                    { name: 'thrust', firstrow: 4, rowcount: 4, animcount: 8 },
+                    { name: 'walk', firstrow: 8, rowcount: 4, animcount: 9 },
+                    { name: 'slash', firstrow: 12, rowcount: 4, animcount: 6 },
+                    { name: 'shoot', firstrow: 16, rowcount: 4, animcount: 13 },
+                    { name: 'hurt', firstrow: 20, rowcount: 1, animcount: 6 },
+                    { name: 'climb', firstrow: 21, rowcount: 1, animcount: 6 },
+                    { name: 'idle', firstrow: 22, rowcount: 4, animcount: 2 },
+                    { name: 'jump', firstrow: 26, rowcount: 4, animcount: 6 },
+                    { name: 'sit', firstrow: 30, rowcount: 4, animcount: 15 },
+                    { name: 'emote', firstrow: 34, rowcount: 4, animcount: 15 },
+                    { name: 'run', firstrow: 38, rowcount: 4, animcount: 8 },
+                    { name: 'watering', firstrow: 42, rowcount: 4, animcount: 7 },
+                    { name: 'combat', firstrow: 46, rowcount: 4, animcount: 3 }
+                ]
+            }
+        };
+
+        // Animation speeds (seconds per frame)
+        const ANIM_SPEEDS = {
+            run: 0.08,      // Fast for running
+            walk: 0.12,     // Normal walking
+            idle: 0.3,      // Slow for idle
+            combat: 0.1,    // Medium for combat animations
+            default: 0.12   // Default fallback
+        };
+
+        // SpriteSheetLoader class
+        class SpriteSheetLoader {
+            constructor(spritesheetName) {
+                this.spritesheetName = spritesheetName;
+                this.image = null;
+                this.config = null;
+                this.loaded = false;
+                this.currentAnimation = null;
+                this.currentDirection = DIRECTION.DOWN;
+                this.currentFrame = 0;
+                this.animTimer = 0;
+                this.animSpeed = ANIM_SPEEDS.default;
+            }
+
+            async load() {
+                return new Promise((resolve, reject) => {
+                    // Get config from embedded configurations
+                    this.config = SPRITESHEET_CONFIGS[this.spritesheetName];
+                    if (!this.config) {
+                        reject(new Error(`No configuration found for ${this.spritesheetName}`));
+                        return;
+                    }
+
+                    // Load image
+                    this.image = new Image();
+                    this.image.onload = () => {
+                        this.loaded = true;
+                        resolve();
+                    };
+                    this.image.onerror = () => reject(new Error(`Failed to load ${this.spritesheetName}.png`));
+                    this.image.src = `Assets/${this.spritesheetName}.png`;
+                });
+            }
+
+            playAnimation(direction, animationName) {
+                this.currentDirection = direction;
+
+                // Reset frame if animation changed
+                if (this.currentAnimation !== animationName) {
+                    this.currentAnimation = animationName;
+                    this.currentFrame = 0;
+                    this.animTimer = 0;
+
+                    // Set animation speed based on animation type
+                    this.animSpeed = ANIM_SPEEDS[animationName] || ANIM_SPEEDS.default;
+                }
+            }
+
+            update(dt) {
+                if (!this.loaded || !this.currentAnimation) return;
+
+                this.animTimer += dt;
+
+                const anim = this.config.animations.find(a => a.name === this.currentAnimation);
+                if (!anim) return;
+
+                if (this.animTimer >= this.animSpeed) {
+                    this.animTimer = 0;
+                    this.currentFrame = (this.currentFrame + 1) % anim.animcount;
+                }
+            }
+
+            draw(ctx, x, y, width, height) {
+                if (!this.loaded || !this.currentAnimation) return;
+
+                const anim = this.config.animations.find(a => a.name === this.currentAnimation);
+                if (!anim) return;
+
+                // Determine row based on animation and direction
+                let row = anim.firstrow;
+
+                if (anim.rowcount === 4) {
+                    // Multi-directional animation
+                    switch (this.currentDirection) {
+                        case DIRECTION.UP:
+                            row = anim.firstrow + 0;
+                            break;
+                        case DIRECTION.LEFT:
+                            row = anim.firstrow + 1;
+                            break;
+                        case DIRECTION.DOWN:
+                            row = anim.firstrow + 2;
+                            break;
+                        case DIRECTION.RIGHT:
+                            row = anim.firstrow + 3;
+                            break;
+                    }
+                } else {
+                    // Single row animation (same for all directions)
+                    row = anim.firstrow;
+                }
+
+                const frameWidth = this.config.frameWidth;
+                const frameHeight = this.config.frameHeight;
+
+                const srcX = this.currentFrame * frameWidth;
+                const srcY = row * frameHeight;
+
+                ctx.drawImage(
+                    this.image,
+                    srcX, srcY,
+                    frameWidth, frameHeight,
+                    x, y,
+                    width, height
+                );
+            }
+        }
+
         let dungeon = [];
         let tileSize = 64;
         let canvas, ctx;
+        let minimapCanvas, minimapCtx;
         let tilesetImage = null;
-        let playerImage = null;
         let isTilesetLoaded = false;
-        let isPlayerLoaded = false;
 
-        // Player globals
         // Player globals
         const PLAYER_SPEED_TILES = 6; // tiles per second
         const PLAYER_SIZE = 0.5; // relative to tile size (smaller for better tolerance)
+
+        // Enemy globals
+        const ENEMY_SPEED_TILES = 3; // tiles per second (slower than player)
+        const ENEMY_AGGRO_RADIUS = 3; // tiles
+        const ENEMY_DEAGGRO_RADIUS = 6; // tiles (2x aggro radius)
+        const ENEMY_IDLE_WAIT_TIME = 2; // seconds to wait at waypoint
+
+        // Combat globals
+        const PLAYER_MAX_HP = 100;
+        const GOBLIN_MAX_HP = 30;
+        const COMBAT_TIME_LIMIT = 10; // seconds per question
+        const DAMAGE_CORRECT = 10; // damage to enemy on correct answer
+        const DAMAGE_WRONG = 15; // damage to player on wrong answer
+
+        // AI States
+        const AI_STATE = {
+            IDLE: 'idle',
+            WANDERING: 'wandering',
+            FOLLOWING: 'following'
+        };
+
+        // Combat state
+        let inCombat = false;
+        let currentEnemy = null;
+
+        let playerSprite = null; // SpriteSheetLoader instance
 
         let player = {
             x: 0,
             y: 0,
             width: 0,
             height: 0,
-            direction: 'down', // down, up, left, right
+            direction: DIRECTION.DOWN,
             isMoving: false,
-            animFrame: 0,
-            animTimer: 0,
-            animSpeed: 0.15 // seconds per frame
+            hp: PLAYER_MAX_HP,
+            maxHp: PLAYER_MAX_HP
         };
 
         let keys = {
@@ -113,6 +350,240 @@
         };
 
         let lastTime = 0;
+
+        // Enemy class
+        class Enemy {
+            constructor(x, y, spriteName, roomId) {
+                this.x = x;
+                this.y = y;
+                this.roomId = roomId;
+                this.sprite = null;
+                this.spriteName = spriteName;
+                this.direction = DIRECTION.DOWN;
+                this.isMoving = false;
+                this.alive = true;
+
+                // HP system
+                this.hp = GOBLIN_MAX_HP;
+                this.maxHp = GOBLIN_MAX_HP;
+
+                // AI state
+                this.aiState = AI_STATE.IDLE;
+                this.waypoint = null;
+                this.idleTimer = 0;
+            }
+
+            async load() {
+                this.sprite = new SpriteSheetLoader(this.spriteName);
+                await this.sprite.load();
+                this.sprite.playAnimation(this.direction, ANIMATION.IDLE);
+            }
+
+            getDistanceToPlayer() {
+                const dx = (player.x + tileSize / 2) - (this.x + tileSize / 2);
+                const dy = (player.y + tileSize / 2) - (this.y + tileSize / 2);
+                return Math.sqrt(dx * dx + dy * dy) / tileSize; // Return distance in tiles
+            }
+
+            pickRandomWaypoint() {
+                // Get all floor tiles in this enemy's room
+                const room = rooms[this.roomId];
+                if (!room) return;
+
+                const roomFloorTiles = [];
+                for (let y = room.y; y < room.y + room.height; y++) {
+                    for (let x = room.x; x < room.x + room.width; x++) {
+                        if (y >= 0 && y < DUNGEON_HEIGHT && x >= 0 && x < DUNGEON_WIDTH) {
+                            if (dungeon[y][x] === TILE.FLOOR && roomMap[y][x] === this.roomId) {
+                                roomFloorTiles.push({ x: x * tileSize, y: y * tileSize });
+                            }
+                        }
+                    }
+                }
+
+                if (roomFloorTiles.length > 0) {
+                    this.waypoint = roomFloorTiles[Math.floor(Math.random() * roomFloorTiles.length)];
+                }
+            }
+
+            update(dt) {
+                if (!this.sprite || !this.alive) return;
+
+                // Update sprite animation
+                this.sprite.update(dt);
+
+                // AI Logic
+                const distanceToPlayer = this.getDistanceToPlayer();
+
+                // State transitions
+                if (this.aiState === AI_STATE.FOLLOWING) {
+                    // Deaggro if player is too far
+                    if (distanceToPlayer > ENEMY_DEAGGRO_RADIUS) {
+                        this.aiState = AI_STATE.IDLE;
+                        this.idleTimer = ENEMY_IDLE_WAIT_TIME;
+                    }
+                } else {
+                    // Aggro if player is close
+                    if (distanceToPlayer <= ENEMY_AGGRO_RADIUS) {
+                        this.aiState = AI_STATE.FOLLOWING;
+                        this.waypoint = null;
+                    }
+                }
+
+                // Execute behavior based on state
+                if (this.aiState === AI_STATE.IDLE) {
+                    this.idleTimer -= dt;
+                    if (this.idleTimer <= 0) {
+                        // Start wandering
+                        this.aiState = AI_STATE.WANDERING;
+                        this.pickRandomWaypoint();
+                    }
+                    this.sprite.playAnimation(this.direction, ANIMATION.IDLE);
+
+                } else if (this.aiState === AI_STATE.WANDERING) {
+                    if (!this.waypoint) {
+                        // No waypoint, go back to idle
+                        this.aiState = AI_STATE.IDLE;
+                        this.idleTimer = ENEMY_IDLE_WAIT_TIME;
+                        return;
+                    }
+
+                    // Move towards waypoint
+                    const dx = this.waypoint.x - this.x;
+                    const dy = this.waypoint.y - this.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < 5) {
+                        // Reached waypoint
+                        this.aiState = AI_STATE.IDLE;
+                        this.idleTimer = ENEMY_IDLE_WAIT_TIME;
+                        this.waypoint = null;
+                        this.sprite.playAnimation(this.direction, ANIMATION.IDLE);
+                    } else {
+                        // Move towards waypoint
+                        const speed = ENEMY_SPEED_TILES * tileSize * dt;
+                        const moveX = (dx / distance) * speed;
+                        const moveY = (dy / distance) * speed;
+
+                        const newX = this.x + moveX;
+                        const newY = this.y + moveY;
+
+                        // Simple collision check
+                        if (!this.checkCollision(newX, this.y)) {
+                            this.x = newX;
+                        }
+                        if (!this.checkCollision(this.x, newY)) {
+                            this.y = newY;
+                        }
+
+                        // Update direction
+                        if (Math.abs(dx) > Math.abs(dy)) {
+                            this.direction = dx > 0 ? DIRECTION.RIGHT : DIRECTION.LEFT;
+                        } else {
+                            this.direction = dy > 0 ? DIRECTION.DOWN : DIRECTION.UP;
+                        }
+
+                        this.sprite.playAnimation(this.direction, ANIMATION.WALK);
+                    }
+
+                } else if (this.aiState === AI_STATE.FOLLOWING) {
+                    // Chase the player
+                    const dx = (player.x + tileSize / 2) - (this.x + tileSize / 2);
+                    const dy = (player.y + tileSize / 2) - (this.y + tileSize / 2);
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance > tileSize / 2) {
+                        // Move towards player
+                        const speed = ENEMY_SPEED_TILES * tileSize * dt;
+                        const moveX = (dx / distance) * speed;
+                        const moveY = (dy / distance) * speed;
+
+                        const newX = this.x + moveX;
+                        const newY = this.y + moveY;
+
+                        // Simple collision check
+                        if (!this.checkCollision(newX, this.y)) {
+                            this.x = newX;
+                        }
+                        if (!this.checkCollision(this.x, newY)) {
+                            this.y = newY;
+                        }
+
+                        // Update direction
+                        if (Math.abs(dx) > Math.abs(dy)) {
+                            this.direction = dx > 0 ? DIRECTION.RIGHT : DIRECTION.LEFT;
+                        } else {
+                            this.direction = dy > 0 ? DIRECTION.DOWN : DIRECTION.UP;
+                        }
+
+                        this.sprite.playAnimation(this.direction, ANIMATION.RUN);
+                    } else {
+                        // Close enough - start combat!
+                        if (!inCombat) {
+                            startCombat(this);
+                        }
+                        this.sprite.playAnimation(this.direction, ANIMATION.IDLE);
+                    }
+                }
+            }
+
+            takeDamage(amount) {
+                this.hp -= amount;
+                if (this.hp <= 0) {
+                    this.hp = 0;
+                    this.die();
+                }
+            }
+
+            die() {
+                this.alive = false;
+                this.sprite.playAnimation(this.direction, ANIMATION.HURT);
+            }
+
+            checkCollision(x, y) {
+                const enemySize = tileSize * PLAYER_SIZE;
+                const margin = (tileSize - enemySize) / 2;
+
+                const left = x + margin;
+                const right = x + tileSize - margin;
+                const top = y + margin;
+                const bottom = y + tileSize - margin;
+
+                const points = [
+                    { x: left, y: top },
+                    { x: right, y: top },
+                    { x: left, y: bottom },
+                    { x: right, y: bottom }
+                ];
+
+                for (let p of points) {
+                    const tileX = Math.floor(p.x / tileSize);
+                    const tileY = Math.floor(p.y / tileSize);
+
+                    if (tileX < 0 || tileX >= DUNGEON_WIDTH || tileY < 0 || tileY >= DUNGEON_HEIGHT) {
+                        return true;
+                    }
+
+                    if (dungeon[tileY][tileX] === TILE.WALL || dungeon[tileY][tileX] === TILE.EMPTY) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            draw(ctx) {
+                if (!this.sprite || !this.sprite.loaded || !this.alive) return;
+
+                // Only draw if the enemy's room is visible
+                if (this.roomId >= 0 && rooms[this.roomId] && !rooms[this.roomId].visible) {
+                    return;
+                }
+
+                this.sprite.draw(ctx, this.x, this.y, tileSize, tileSize);
+            }
+        }
+
+        let enemies = []; // Array of all enemies
 
         // Room tracking for fog of war
         let rooms = [];
@@ -184,6 +655,13 @@
             canvas = document.getElementById('dungeonCanvas');
             ctx = canvas.getContext('2d');
 
+            minimapCanvas = document.getElementById('minimap');
+            minimapCtx = minimapCanvas.getContext('2d');
+
+            // Set minimap size (200x200 pixels)
+            minimapCanvas.width = 200;
+            minimapCanvas.height = 200;
+
             // Handle resize
             window.addEventListener('resize', () => {
                 canvas.width = window.innerWidth;
@@ -205,32 +683,28 @@
             loadAssets();
         };
 
-        function loadAssets() {
-            let loadedCount = 0;
-            const totalAssets = 2;
-
-            function checkLoaded() {
-                loadedCount++;
-                if (loadedCount === totalAssets) {
-                    startGame();
-                }
-            }
-
+        async function loadAssets() {
             // Load tileset
             tilesetImage = new Image();
-            tilesetImage.onload = function () {
-                isTilesetLoaded = true;
-                checkLoaded();
-            };
+            const tilesetPromise = new Promise((resolve) => {
+                tilesetImage.onload = () => {
+                    isTilesetLoaded = true;
+                    resolve();
+                };
+            });
             tilesetImage.src = 'Assets/Castle-Dungeon2_Tiles/Tileset.png';
 
-            // Load player
-            playerImage = new Image();
-            playerImage.onload = function () {
-                isPlayerLoaded = true;
-                checkLoaded();
-            };
-            playerImage.src = 'Assets/player_spritesheet.png';
+            // Load player sprite
+            playerSprite = new SpriteSheetLoader('player');
+            const playerPromise = playerSprite.load();
+
+            // Wait for all assets
+            await Promise.all([tilesetPromise, playerPromise]);
+
+            // Set initial animation
+            playerSprite.playAnimation(DIRECTION.DOWN, ANIMATION.IDLE);
+
+            startGame();
         }
 
         function startGame() {
@@ -250,6 +724,9 @@
 
         function update(dt) {
             if (isNaN(dt)) dt = 0;
+
+            // Skip update if in combat
+            if (inCombat) return;
 
             // Handle movement
             let dx = 0;
@@ -284,24 +761,13 @@
 
                 // Update direction
                 if (Math.abs(dx) > Math.abs(dy)) {
-                    player.direction = dx > 0 ? 'right' : 'left';
+                    player.direction = dx > 0 ? DIRECTION.RIGHT : DIRECTION.LEFT;
                 } else {
-                    player.direction = dy > 0 ? 'down' : 'up';
+                    player.direction = dy > 0 ? DIRECTION.DOWN : DIRECTION.UP;
                 }
 
-                // Update animation
-                player.animTimer += dt;
-
-                // Determine max frames based on direction
-                let maxFrames = 2;
-                if (player.direction === 'left' || player.direction === 'right') {
-                    maxFrames = 3;
-                }
-
-                if (player.animTimer >= player.animSpeed) {
-                    player.animTimer = 0;
-                    player.animFrame = (player.animFrame + 1) % maxFrames;
-                }
+                // Play run animation
+                playerSprite.playAnimation(player.direction, ANIMATION.RUN);
 
                 // Update fog of war based on player position
                 updateFogOfWar();
@@ -320,12 +786,16 @@
                     }
                 }
             } else {
-                // Idle animation
-                player.animTimer += dt;
-                if (player.animTimer >= player.animSpeed * 2) { // Slower idle
-                    player.animTimer = 0;
-                    player.animFrame = (player.animFrame + 1) % 2; // Idle always has 2 frames
-                }
+                // Play idle animation
+                playerSprite.playAnimation(player.direction, ANIMATION.IDLE);
+            }
+
+            // Update sprite animation
+            playerSprite.update(dt);
+
+            // Update all enemies
+            for (const enemy of enemies) {
+                enemy.update(dt);
             }
         }
 
@@ -380,59 +850,16 @@
         function render() {
             // Render map and player together in renderDungeon to handle camera transform
             renderDungeon();
+            renderMinimap();
         }
 
         function drawPlayer() {
-            if (!isPlayerLoaded) return;
+            if (!playerSprite || !playerSprite.loaded) return;
 
-            // Calculate source rect based on state
-            // Sheet layout:
-            // Row 0: IdleDown (2 frames)
-            // Row 1: WalkDown (2 frames)
-            // Row 2: WalkLeft (3 frames) - Flip for Right
-            // Row 3: IdleUp (2 frames)
-            // Row 4: WalkUp (2 frames)
-
-            let row = 0;
-            let flip = false;
-
-            if (player.isMoving) {
-                switch (player.direction) {
-                    case 'down': row = 1; break;
-                    case 'left': row = 2; flip = true; break; // Source is left
-                    case 'right': row = 2; break; // Flip for right
-                    case 'up': row = 4; break;
-                }
-            } else {
-                // Idle
-                if (player.direction === 'up') {
-                    row = 3; // IdleUp
-                } else {
-                    row = 0; // IdleDown (for down, left, right)
-                }
-            }
-
-            // Sheet is 3 columns x 5 rows
-            const frameWidth = playerImage.width / 3;
-            const frameHeight = playerImage.height / 5;
-
-            const srcX = player.animFrame * frameWidth;
-            const srcY = row * frameHeight;
-
-            ctx.save();
-
-            if (flip) {
-                ctx.translate(player.x + tileSize, player.y);
-                ctx.scale(-1, 1);
-                ctx.drawImage(playerImage, srcX, srcY, frameWidth, frameHeight, 0, 0, tileSize, tileSize);
-            } else {
-                ctx.drawImage(playerImage, srcX, srcY, frameWidth, frameHeight, player.x, player.y, tileSize, tileSize);
-            }
-
-            ctx.restore();
+            playerSprite.draw(ctx, player.x, player.y, tileSize, tileSize);
         }
 
-        function generateNewDungeon() {
+        async function generateNewDungeon() {
             dungeon = createEmptyDungeon();
 
             // Initialize tile variants array with weighted random selection
@@ -461,21 +888,76 @@
 
             // Spawn player
             spawnPlayer();
+
+            // Spawn enemies
+            await spawnEnemies();
         }
 
         function spawnPlayer() {
-            // Find first visible room
-            if (rooms.length > 0) {
-                const room = rooms[0];
-                // Center of room
-                const centerX = Math.floor(room.x + room.width / 2);
-                const centerY = Math.floor(room.y + room.height / 2);
+            // Collect all valid floor tiles
+            const validSpawnPoints = [];
 
-                player.x = centerX * tileSize;
-                player.y = centerY * tileSize;
+            for (let y = 0; y < DUNGEON_HEIGHT; y++) {
+                for (let x = 0; x < DUNGEON_WIDTH; x++) {
+                    if (dungeon[y][x] === TILE.FLOOR) {
+                        validSpawnPoints.push({ x, y });
+                    }
+                }
+            }
 
-                // Make sure room is visible
-                room.visible = true;
+            // Pick a random spawn point
+            if (validSpawnPoints.length > 0) {
+                const spawnPoint = validSpawnPoints[Math.floor(Math.random() * validSpawnPoints.length)];
+
+                player.x = spawnPoint.x * tileSize;
+                player.y = spawnPoint.y * tileSize;
+
+                // Make sure the room containing this spawn point is visible
+                const roomId = roomMap[spawnPoint.y][spawnPoint.x];
+                if (roomId >= 0 && rooms[roomId]) {
+                    rooms[roomId].visible = true;
+                }
+            }
+        }
+
+        async function spawnEnemies() {
+            // Clear existing enemies
+            enemies = [];
+
+            // Spawn one goblin per room (except the player's starting room)
+            const playerRoomId = roomMap[Math.floor((player.y + tileSize / 2) / tileSize)]
+            [Math.floor((player.x + tileSize / 2) / tileSize)];
+
+            for (let i = 0; i < rooms.length; i++) {
+                // Skip player's starting room
+                if (i === playerRoomId) continue;
+
+                const room = rooms[i];
+
+                // Find a random floor tile in this room
+                const roomFloorTiles = [];
+                for (let y = room.y; y < room.y + room.height; y++) {
+                    for (let x = room.x; x < room.x + room.width; x++) {
+                        if (y >= 0 && y < DUNGEON_HEIGHT && x >= 0 && x < DUNGEON_WIDTH) {
+                            if (dungeon[y][x] === TILE.FLOOR && roomMap[y][x] === i) {
+                                roomFloorTiles.push({ x, y });
+                            }
+                        }
+                    }
+                }
+
+                // Spawn goblin at random position in room
+                if (roomFloorTiles.length > 0) {
+                    const spawnPos = roomFloorTiles[Math.floor(Math.random() * roomFloorTiles.length)];
+                    const enemy = new Enemy(
+                        spawnPos.x * tileSize,
+                        spawnPos.y * tileSize,
+                        'goblin',
+                        i
+                    );
+                    await enemy.load();
+                    enemies.push(enemy);
+                }
             }
         }
 
@@ -931,10 +1413,112 @@
                 }
             }
 
+            // Draw enemies (before player so player appears on top)
+            for (const enemy of enemies) {
+                enemy.draw(ctx);
+            }
+
             // Draw player (already in world coordinates, translation handles position)
             drawPlayer();
 
             ctx.restore();
+        }
+
+        function renderMinimap() {
+            if (!minimapCtx) return;
+
+            // Clear minimap
+            minimapCtx.fillStyle = '#000000';
+            minimapCtx.fillRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+
+            // Calculate scale factor (fit dungeon into minimap)
+            const scaleX = minimapCanvas.width / DUNGEON_WIDTH;
+            const scaleY = minimapCanvas.height / DUNGEON_HEIGHT;
+            const scale = Math.min(scaleX, scaleY);
+
+            // Calculate offset to center the dungeon in minimap
+            const offsetX = (minimapCanvas.width - DUNGEON_WIDTH * scale) / 2;
+            const offsetY = (minimapCanvas.height - DUNGEON_HEIGHT * scale) / 2;
+
+            // Draw dungeon tiles
+            for (let y = 0; y < DUNGEON_HEIGHT; y++) {
+                for (let x = 0; x < DUNGEON_WIDTH; x++) {
+                    const tile = dungeon[y][x];
+                    const roomId = roomMap[y][x];
+
+                    // Check if this tile's room is visible
+                    let isVisible = false;
+                    if (roomId >= 0 && rooms[roomId]) {
+                        isVisible = rooms[roomId].visible;
+                    } else if (roomId === -1 || roomId === -2) { // Wall or Door
+                        // Check if any adjacent tile belongs to a visible room
+                        for (let dy = -1; dy <= 1; dy++) {
+                            for (let dx = -1; dx <= 1; dx++) {
+                                if (dx === 0 && dy === 0) continue;
+                                const ny = y + dy;
+                                const nx = x + dx;
+                                if (ny >= 0 && ny < DUNGEON_HEIGHT && nx >= 0 && nx < DUNGEON_WIDTH) {
+                                    const neighborRoomId = roomMap[ny][nx];
+                                    if (neighborRoomId >= 0 && rooms[neighborRoomId] && rooms[neighborRoomId].visible) {
+                                        isVisible = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (isVisible) break;
+                        }
+                    }
+
+                    if (!isVisible) {
+                        // Fog of war - keep black
+                        continue;
+                    }
+
+                    // Choose color based on tile type
+                    if (tile === TILE.FLOOR) {
+                        // Different colors for different room types
+                        if (roomId >= 0 && rooms[roomId]) {
+                            const roomType = rooms[roomId].type;
+                            if (roomType === 'treasure') {
+                                minimapCtx.fillStyle = '#FFD700'; // Gold
+                            } else if (roomType === 'combat') {
+                                minimapCtx.fillStyle = '#FF4444'; // Red
+                            } else {
+                                minimapCtx.fillStyle = '#888888'; // Gray
+                            }
+                        } else {
+                            minimapCtx.fillStyle = '#888888';
+                        }
+                    } else if (tile === TILE.WALL) {
+                        minimapCtx.fillStyle = '#444444'; // Dark gray
+                    } else if (tile === TILE.DOOR) {
+                        minimapCtx.fillStyle = '#4CAF50'; // Green
+                    } else {
+                        // Empty - keep black
+                        continue;
+                    }
+
+                    // Draw pixel
+                    minimapCtx.fillRect(
+                        offsetX + x * scale,
+                        offsetY + y * scale,
+                        Math.max(1, scale),
+                        Math.max(1, scale)
+                    );
+                }
+            }
+
+            // Draw player position
+            const playerTileX = Math.floor((player.x + tileSize / 2) / tileSize);
+            const playerTileY = Math.floor((player.y + tileSize / 2) / tileSize);
+
+            minimapCtx.fillStyle = '#00FFFF'; // Cyan for player
+            minimapCtx.fillRect(
+                offsetX + playerTileX * scale - scale,
+                offsetY + playerTileY * scale - scale,
+                Math.max(2, scale * 3),
+                Math.max(2, scale * 3)
+            );
         }
 
 
@@ -1001,6 +1585,162 @@
         window.addEventListener('load', function () {
             canvas.addEventListener('click', handleCanvasClick);
         });
+
+        // Combat System
+        let combatTimer = 0;
+        let combatTimerInterval = null;
+        let currentQuestion = null;
+        let currentSubject = null;
+
+        function startCombat(enemy) {
+            inCombat = true;
+            currentEnemy = enemy;
+
+            // Choose random subject
+            const subjects = Object.keys(QUESTION_DATABASE);
+            currentSubject = subjects[Math.floor(Math.random() * subjects.length)];
+
+            // Show combat UI
+            document.getElementById('combat-ui').style.display = 'block';
+            document.getElementById('combat-subject').textContent = `Kampf: ${QUESTION_DATABASE[currentSubject].subject}`;
+
+            // Ask first question
+            askQuestion();
+        }
+
+        function askQuestion() {
+            if (!currentEnemy || !currentEnemy.alive || !player.hp > 0) {
+                endCombat();
+                return;
+            }
+
+            // Get random question from current subject
+            const questionPool = QUESTION_DATABASE[currentSubject].questions;
+            const questionData = questionPool[Math.floor(Math.random() * questionPool.length)];
+
+            currentQuestion = {
+                question: questionData.question,
+                correctAnswer: questionData.correct,
+                answers: [...questionData.answers]
+            };
+
+            // Shuffle answers
+            const shuffled = [];
+            const correctAnswerText = currentQuestion.answers[currentQuestion.correctAnswer];
+
+            // Create array of indices and shuffle
+            const indices = currentQuestion.answers.map((_, i) => i);
+            for (let i = indices.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [indices[i], indices[j]] = [indices[j], indices[i]];
+            }
+
+            // Rearrange answers and find new correct index
+            currentQuestion.answers = indices.map(i => questionData.answers[i]);
+            currentQuestion.correctAnswer = currentQuestion.answers.indexOf(correctAnswerText);
+
+            // Display question
+            document.getElementById('combat-question').textContent = currentQuestion.question;
+
+            // Display answers
+            const answersDiv = document.getElementById('combat-answers');
+            answersDiv.innerHTML = '';
+
+            currentQuestion.answers.forEach((answer, index) => {
+                const button = document.createElement('button');
+                button.textContent = answer;
+                button.style.cssText = 'padding: 15px; font-size: 16px; background-color: #2196F3; color: white; border: none; border-radius: 8px; cursor: pointer; transition: background-color 0.2s;';
+                button.onmouseover = () => button.style.backgroundColor = '#1976D2';
+                button.onmouseout = () => button.style.backgroundColor = '#2196F3';
+                button.onclick = () => answerQuestion(index);
+                answersDiv.appendChild(button);
+            });
+
+            // Update HP display
+            updateHPDisplay();
+
+            // Start timer
+            combatTimer = COMBAT_TIME_LIMIT;
+            document.getElementById('timer-display').textContent = combatTimer;
+
+            if (combatTimerInterval) clearInterval(combatTimerInterval);
+            combatTimerInterval = setInterval(() => {
+                combatTimer--;
+                document.getElementById('timer-display').textContent = combatTimer;
+
+                if (combatTimer <= 0) {
+                    clearInterval(combatTimerInterval);
+                    answerQuestion(-1); // Time's up = wrong answer
+                }
+            }, 1000);
+        }
+
+        function answerQuestion(selectedIndex) {
+            if (combatTimerInterval) {
+                clearInterval(combatTimerInterval);
+                combatTimerInterval = null;
+            }
+
+            const feedbackDiv = document.getElementById('combat-feedback');
+
+            if (selectedIndex === currentQuestion.correctAnswer) {
+                // Correct answer!
+                feedbackDiv.textContent = '✓ Richtig!';
+                feedbackDiv.style.color = '#4CAF50';
+
+                currentEnemy.takeDamage(DAMAGE_CORRECT);
+            } else {
+                // Wrong answer or timeout
+                feedbackDiv.textContent = selectedIndex === -1 ? '✗ Zeit abgelaufen!' : '✗ Falsch!';
+                feedbackDiv.style.color = '#FF4444';
+
+                player.hp -= DAMAGE_WRONG;
+                if (player.hp < 0) player.hp = 0;
+            }
+
+            updateHPDisplay();
+
+            // Check if combat should end
+            if (!currentEnemy.alive || player.hp <= 0) {
+                setTimeout(() => {
+                    endCombat();
+                }, 1500);
+            } else {
+                // Next question
+                setTimeout(() => {
+                    feedbackDiv.textContent = '';
+                    askQuestion();
+                }, 1500);
+            }
+        }
+
+        function updateHPDisplay() {
+            document.getElementById('player-hp-display').textContent = player.hp;
+            document.getElementById('enemy-hp-display').textContent = currentEnemy ? currentEnemy.hp : 0;
+        }
+
+        function endCombat() {
+            if (combatTimerInterval) {
+                clearInterval(combatTimerInterval);
+                combatTimerInterval = null;
+            }
+
+            document.getElementById('combat-ui').style.display = 'none';
+            inCombat = false;
+
+            // Check if player died
+            if (player.hp <= 0) {
+                // Player died - restart game
+                setTimeout(() => {
+                    alert('Du wurdest besiegt! Das Spiel wird neu gestartet.');
+                    generateNewDungeon();
+                    player.hp = PLAYER_MAX_HP;
+                }, 500);
+            }
+
+            currentEnemy = null;
+            currentQuestion = null;
+        }
     </script>
 </body>
 
