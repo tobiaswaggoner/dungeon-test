@@ -200,6 +200,7 @@
                 this.currentFrame = 0;
                 this.animTimer = 0;
                 this.animSpeed = ANIM_SPEEDS.default;
+                this.stopOnLastFrame = false; // For death animations
             }
 
             async load() {
@@ -246,7 +247,13 @@
 
                 if (this.animTimer >= this.animSpeed) {
                     this.animTimer = 0;
-                    this.currentFrame = (this.currentFrame + 1) % anim.animcount;
+
+                    if (this.stopOnLastFrame && this.currentFrame >= anim.animcount - 1) {
+                        // Stay on last frame
+                        this.currentFrame = anim.animcount - 1;
+                    } else {
+                        this.currentFrame = (this.currentFrame + 1) % anim.animcount;
+                    }
                 }
             }
 
@@ -407,10 +414,13 @@
             }
 
             update(dt) {
-                if (!this.sprite || !this.alive) return;
+                if (!this.sprite) return;
 
-                // Update sprite animation
+                // Update sprite animation (even when dead for hurt animation)
                 this.sprite.update(dt);
+
+                // Skip AI if dead
+                if (!this.alive) return;
 
                 // AI Logic
                 const distanceToPlayer = this.getDistanceToPlayer();
@@ -537,7 +547,9 @@
 
             die() {
                 this.alive = false;
+                this.aiState = AI_STATE.IDLE; // Stop moving
                 this.sprite.playAnimation(this.direction, ANIMATION.HURT);
+                this.sprite.stopOnLastFrame = true; // Stop on last frame of hurt animation
             }
 
             checkCollision(x, y) {
@@ -572,13 +584,14 @@
             }
 
             draw(ctx) {
-                if (!this.sprite || !this.sprite.loaded || !this.alive) return;
+                if (!this.sprite || !this.sprite.loaded) return;
 
                 // Only draw if the enemy's room is visible
                 if (this.roomId >= 0 && rooms[this.roomId] && !rooms[this.roomId].visible) {
                     return;
                 }
 
+                // Draw alive or dead (corpse)
                 this.sprite.draw(ctx, this.x, this.y, tileSize, tileSize);
             }
         }
@@ -1691,7 +1704,10 @@
                 currentEnemy.takeDamage(DAMAGE_CORRECT);
             } else {
                 // Wrong answer or timeout
-                feedbackDiv.textContent = selectedIndex === -1 ? '✗ Zeit abgelaufen!' : '✗ Falsch!';
+                const correctAnswerText = currentQuestion.answers[currentQuestion.correctAnswer];
+                feedbackDiv.innerHTML = selectedIndex === -1
+                    ? `✗ Zeit abgelaufen!<br>Richtige Antwort: <span style="color: #4CAF50">${correctAnswerText}</span>`
+                    : `✗ Falsch!<br>Richtige Antwort: <span style="color: #4CAF50">${correctAnswerText}</span>`;
                 feedbackDiv.style.color = '#FF4444';
 
                 player.hp -= DAMAGE_WRONG;
